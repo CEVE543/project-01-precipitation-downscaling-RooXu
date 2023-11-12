@@ -6,3 +6,4 @@ data/
 !data/processed/README.md
 
 .cdsapirc
+template_files/
