@@ -1,0 +1,311 @@
+---
+title: "Project 01"
+subtitle: "Ensemble Q-Q and GLM"
+jupyter: julia-1.9
+date: 2023-11-10
+author: "Aaron Xu (ax16)" 
+
+number-sections: true
+code-annotations: hover
+
+kind: "Project"
+Module: "3"
+categories:
+    - "Module 2"
+    - "Labs"
+
+format:
+    html: 
+        toc-depth: 3
+    docx: 
+        toc: true
+        toc-depth: 3
+        fig-format: png
+---
+```{julia}
+#| output: false
+using Dates
+using MultivariateStats
+using Plots
+using NCDatasets
+using StatsBase
+using Unitful
+using DataFrames
+using Distributions
+using StatsPlots
+using Turing
+using DynamicHMC
+```
+# Exectuive Summary 
+
+# Data Import 
+```{julia}
+# file list
+t2m_obj = NCDataset("data/raw/2m_temperature_2020.nc") #kelvin
+t2m_time = Dates.Date.(t2m_obj["time"][:])
+t2m_lon =  t2m_obj["longitude"][:]
+t2m_lat = t2m_obj["latitude"][:]
+t2m_vals = t2m_obj["t2m"][:,:,:].*u"K"
+close(t2m_obj)
+
+
+tp_obj = NCDataset("data/raw/Total_precipitation_2020.nc") #meters -> mm
+tp_time = Dates.Date.(tp_obj["time"][:])
+tp_lon =  tp_obj["longitude"][:]
+tp_lat = tp_obj["latitude"][:]
+tp_vals = tp_obj["tp"][:,:,:].* u"m" .* 1000u"mm"./u"m"
+close(tp_obj)
+
+cpc_obj = NCDataset("data/raw/precip_tx.nc") #mm
+cpc_time = Dates.Date.(cpc_obj["time"][:])
+cpc_lon = 180 .- cpc_obj["lon"][:]
+cpc_lat = cpc_obj["lat"][:]
+cpc_vals = cpc_obj["precip"][:,:,:].*u"mm"
+close(cpc_obj)
+```
+
+Choosing single grid to model 
+```{julia}
+println(t2m_lon) # I choose -84.0
+println(tp_lon) 
+println(cpc_lon) # I choose -84.25
+```
+```{julia}
+println(t2m_lat) # I choose 33.0 
+println(cpc_lat) # I choose 32.75
+```
+
+```{julia}
+# Find indecies
+era_lon = argmin(abs.(t2m_lon .+ 84.0))
+era_lat = argmin(abs.(t2m_lat .- 33.0))
+cpc_lon = argmin(abs.(cpc_lon .+ 84.25))
+cpc_lat = argmin(abs.(cpc_lat .- 32.75))
+
+# Temporarily Setting Time Domain
+year_start = Dates.Date(2020,1,1)
+year_end = Dates.Date(2020,12,31)
+
+# Extracting Time Series from Location
+t2m_loc = t2m_vals[era_lon,era_lat,:]
+tp_loc = tp_vals[era_lon,era_lat,:]
+cpc_loc = cpc_vals[cpc_lon,cpc_lat, (cpc_time .<= year_end) .* (cpc_time .>= year_start)];
+cpc_time = cpc_time[(cpc_time .<= year_end) .* (cpc_time .>= year_start)]
+println("t2m_loc size: ",size(t2m_loc))
+println("tp_loc size: ",size(tp_loc))
+println("cpc_loc size: ",size(cpc_loc))
+```
+# Data Wrangling and Exploration 
+```{julia}
+df_era_hr = DataFrame(time = t2m_time, temp = t2m_loc, precip = tp_loc)
+filter = vec(df_era_hr[!,:precip].< (0.0u"mm"))
+df_era_hr[filter,:precip] .= 0.0*u"mm"
+df_era_d = combine(groupby(df_era_hr,:time),:precip => sum)
+df_cpc_d = DataFrame(time = cpc_time, precip = cpc_loc)
+df_d = innerjoin(df_era_d, df_cpc_d, on = :time, renamecols = "_era" => "_cpc")
+```
+```{julia}
+df_era_hr[!,:deltaT] .= df_era_hr.temp .* 0.0
+
+for (i,val) in enumerate(eachrow(df_era_hr.temp))
+    if i == 1
+        df_era_hr[1,:deltaT] = 0.0u"K"
+    else
+        df_era_hr[i,:deltaT] = df_era_hr[i,:temp]-df_era_hr[i-1,:temp] 
+    end
+end
+
+```
+
+```
+# Plot Distribution of Hourly Temperature and RainFall (all ERA5)
+a = histogram(df_era_hr[!,:precip])
+b = histogram(df_era_hr[!,:temp])
+c = scatter(df_era_hr[!,:temp],df_era_hr[!,:precip]) # slight positive trend 
+plot(a,b,c)
+```
+
+```
+# Plot Distribution of Hourly Temperature and RainFall (all ERA5)
+filter = df_era_hr[!,:precip] .> mean(df_era_hr[!,:precip]) 
+a = histogram(df_era_hr[filter,:precip])
+b = histogram(df_era_hr[filter,:temp])
+c = scatter(df_era_hr[filter,:temp],df_era_hr[filter,:precip]) # no change in shapes when low values are cut. I don't think theres a strong correlation. 
+plot(a,b,c)
+```
+
+```
+# Plot Distribution of Daily Precipitation from ERA5 and CPC obvervations
+a = histogram(df_d[!,:precip_sum_era],title = "Era")
+b = histogram(df_d[!,:precip_cpc], title = "CPC")
+c= scatter(df_d[!,:precip_cpc],df_d[!,:precip_sum_era],title = "Q-Q") # absolute garbage 
+plot(a,b,c)
+```
+## Distribution Fitting 
+```
+function plot_dist(dist; name="", xlims=missing)
+    ub = quantile(dist, 0.998)
+    lb = quantile(dist, 0.002)
+    p = plot(x -> pdf(dist, x); ylabel="Probability Density", label=name, xlims=(lb, ub))
+    !ismissing(xlims) && xlims!(p, xlims)
+    return p
+end
+```
+
+LogNormal vs Pareto 
+
+```
+fitted = fit(LogNormal,(df_era_hr[df_era_hr.precip .> 0.0u"mm",:precip]./u"mm")) 
+
+histogram(df_era_hr[df_era_hr.precip .> 0.0u"mm",:precip]./u"mm",normalize = true,xlims=(0,2))
+
+plot!(fitted,xlims=(0,2))
+
+```
+# Methods 
+0. Q-Q bias correction for ERA5 Precipitation and Precipitation 
+1. Fit a distribution to Temperature 
+2. Fit a distribution to ERA5 Precipitation 
+3. Write a function that links Temperature distribution to ERA5 Preciptation distribution 
+```{julia}
+function link_function1(value)
+    return value
+end
+
+function link_function2(value)
+    return abs(value)
+end
+
+@model function regression(y::AbstractVector, x::AbstractVector,x1::AbstractVector)
+        α ~ Normal(0, 5)
+        β ~ Normal(0, 5)
+        β1 ~ Normal(0,5) 
+
+        γ ~ Normal(0, 5)
+        χ ~ Normal(0, 5)
+        χ1 ~ Normal(0, 5)
+        for i in eachindex(y)
+            μ = link_function1(α + β * x[i] + β1 * x1[i])
+            σ = link_function2(γ + χ * x[i]+ χ1 * x1[i])
+            y[i] ~ LogNormal(μ,σ)
+        end
+end
+```
+
+```{julia}
+X = df_era_hr.temp[df_era_hr.precip .> 0.0u"mm"]./u"K"
+X1 = df_era_hr.deltaT[df_era_hr.precip .> 0.0u"mm"]./u"K"
+y = df_era_hr.precip[df_era_hr.precip .> 0.0u"mm"]./u"mm"
+
+logistic_chn = let
+    model = regression( y , X ,X1)
+    sampler = externalsampler(DynamicHMC.NUTS())
+    nsamples = 100
+    sample(model, sampler, nsamples; drop_warmup=true)
+end
+plot(logistic_chn)
+```
+
+```{julia}
+function predict_precip_one(chn,T_i, dT_i, R_n, RD)
+    elapsed_precip = sum(R_n) 
+    max_precip = RD 
+
+    α = mean(chn[:α])
+    β = mean(chn[:β])
+    β1 = mean(chn[:β1])
+    γ = mean(chn[:γ])
+    χ = mean(chn[:χ])
+    χ1 = mean(chn[:χ1])
+    μ = link_function1(α+β*T_i+β1*dT_i)
+    #print(size(μ))
+    σ = link_function2(γ+χ*T_i+χ1*dT_i)
+    #print(size(σ))
+    dist = LogNormal(μ,σ)
+    R_i = [Inf64]
+    LL_i = 0.0
+    #print(typeof(R_i))
+    #print(typeof(max_precip))
+    #print(typeof(elapsed_precip))
+    counter = 0
+    #println("maxL", max_precip)
+    if max_precip == 0.0
+        R_i[1] = 0.0
+        #println("nob")
+    else
+        #println("coooob")
+        while ((R_i[1] > (max_precip-elapsed_precip))  | (R_i == Inf))
+            counter = counter + 1 
+            if (max_precip - elapsed_precip) < 0.0 
+                R_i[1] = 0.0 
+                LL_i = 0.0
+                break
+            end
+            R_i[1] = rand(dist,1)[1]
+            LL_i = logpdf(dist,R_i[1])
+
+            if (R_i[1]+elapsed_precip) > max_precip
+                R_i[1] = Inf 
+                LL_i = -Inf
+            end
+
+            if counter > 100 
+                R_i[1]= 0.0
+                LL_i = 0.0 
+                break
+            end
+            
+        end
+
+    end
+
+    return R_i[1],LL_i
+end
+```
+Output of this section should be parameters to obtain the distribution of hourly rainfall given an hourly 2meter-temperature. 
+
+## Testing 
+```{julia}
+df_era_hr[!,:model] = df_era_hr.precip.*0.0
+df_era_hr[!,:loglikelihood] = df_era_hr.precip ./u"mm" .*0.0
+for (a_idx,a) in enumerate(eachrow(df_d[:,:]))
+    offset_start = (a_idx-1)*24+1 
+    offset_end = (a_idx)*24
+
+    for (idx,b) in enumerate(eachrow(df_era_hr[offset_start:offset_end ,:]))
+        if idx != 1
+            R_n = df_era_hr[offset_start:offset_end,:model]./u"mm"
+        else
+            R_n = [0.0]
+        end
+        R_i,LL_i = predict_precip_one(logistic_chn,b[:temp]./u"K",b[:deltaT]./u"K",R_n,a[:precip_sum_era]./u"mm")
+
+        #println("R_i  ", R_i )
+        #println("Idx ", idx)
+        #println("max_precip",a[:precip_sum_era])
+        df_era_hr[(idx-1)+offset_start,:model] = R_i * u"mm"
+        df_era_hr[(idx-1)+offset_start,:loglikelihood] = LL_i[1]
+    end
+end
+
+
+    println(sum(df_era_hr.precip[1:240]))
+    println(sum(df_era_hr.model[1:240]))
+    println(sum(df_era_hr.loglikelihood))
+    a = plot(df_era_hr.precip[1:240])
+    plot!(df_era_hr.model[1:240])
+    b = scatter(df_era_hr.precip, df_era_hr.model)
+    plot(a,b)
+```
+
+```{julia}
+reconstruct_daily_precip = combine(groupby(df_era_hr,:time), :precip  => sum, :model => sum, :loglikelihood => sum)
+
+a = plot(reconstruct_daily_precip.precip_sum)
+plot!(reconstruct_daily_precip.model_sum)
+b = scatter(reconstruct_daily_precip.precip_sum,reconstruct_daily_precip.model_sum)
+plot(a,b)
+```
+# Model Comparison
+
+# Conclusion

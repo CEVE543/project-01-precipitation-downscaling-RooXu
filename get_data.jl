@@ -276,14 +276,9 @@ function run_demo()
         download_single_level_data.(
             year, joinpath(data_dir, "2m_temperature_$year.nc"), "2m_temperature"
         )
-
-        # Download 500 hPa geopotential for the year 2020
-        level = 500
-        download_pressure_level_data.(
-            year,
-            joinpath(data_dir, "$(level)hPa_geopotential_$year.nc"),
-            "geopotential",
-            level,
+        # Download 2m air temperature for the year 2020
+        download_single_level_data.(
+            year, joinpath(data_dir, "Total_precipitation_$year.nc"), "Total_precipitation"
         )
     end
 
@@ -291,9 +286,8 @@ function run_demo()
     fnames = shuffle(glob("2m_temperature", data_dir)) # shuffle -- should work even if out of order
     t2m = open_mfdataset(fnames, "t2m") # we sort based on time, so we don't need to sort here
 
-    # read in all the 500 hPa geopotential data
-    fnames = shuffle(glob("500hPa_geopotential", data_dir))
-    z500 = open_mfdataset(fnames, "z")
+    fnames = shuffle(glob("Total_precipitation", data_dir)) # shuffle -- should work even if out of order
+    tp = open_mfdataset(fnames, "tp") # we sort based on time, so we don't need to sort here
 
     display(t2m)
     display(z500)
