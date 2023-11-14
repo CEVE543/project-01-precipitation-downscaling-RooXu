@@ -1,6 +1,6 @@
 ---
 title: "Project 01"
-subtitle: "Ensemble Q-Q and GLM"
+subtitle: "Distributional Downscaling"
 jupyter: julia-1.9
 date: 2023-11-10
 author: "Aaron Xu (ax16)" 
@@ -9,7 +9,7 @@ number-sections: true
 code-annotations: hover
 
 kind: "Project"
-Module: "3"
+Module: "2"
 categories:
     - "Module 2"
     - "Labs"
@@ -17,7 +17,7 @@ categories:
 format:
     html: 
         toc-depth: 3
-    docx: 
+    pdf: 
         toc: true
         toc-depth: 3
         fig-format: png
@@ -38,39 +38,58 @@ using DynamicHMC
 ```
 # Exectuive Summary 
 
-In this project, my objective was to model hourly precipitation at a single location given the total precipitation of that day. There are many ways to approach this problem. I opted to explore the capability of generalized linear models. Initially, I created a GLM that related the hourly temperature to the hourly precipitation. Then I created a GLM that related the hourly temperature and the hourly change in temperature to the hourly precipitation. The precipitation could then be estimated provided there is data on temperature. If there are concerns about the correlational support between temperature and precipitation, they are valid, because model performance was laughably bad. Quantile-Quanitle plots between training data and model output showed no clear trends. However, if daily total precipitation were used as a limit for model output, Q-Q correlation may improve by about a factor of 10. 
-
-## GLM Specifics 
-
-I assumed that the distribution of hourly precipitation for annual observation period could be described by a log-normal curve. Given this assumption, the intensity of hourly precipitation can be described using two paramters, $\mu$ the mean and $\sigma$ is the standard deviation. I estimated these parameters using these equations.
-
-$$\mu_i = \alpha+\beta x_i $$ 
-{#eq-a}
-
-$$\sigma_i = | \gamma+\chi x_i |$$
-{#eq-b}
-
-
-Note that I have chosen to use the identity link function for equation @eq-a and a non-cononical absolute value for @eq-b. The idenity link function was chosen as $\mu \in (-\infty,\infty)$ and, the absolute value function was chosen as $\sigma \in (0,\infty)$. 
-
-## Using Observed Daily Total Precipitation as a Boundary Condition 
-
-If I sampled from a distribution for $y_i(x_i |\theta)$ twentyfour times, the sum would not be guarranteed to stay within the observed daily precipitation for that time period. To prevent overestimating daily precipitation, I reject any sample of the distribution of $y_i(x_i|\theta)$ that put the total daily precipitation above the corresponding observation. 
+In this project, my objective was to model hourly precipitation at a single location given the total precipitation of that day. There are many ways to approach this problem. I opted to do this using distributional methods. Initially, I created a generalize linear model that related the hourly 2-meter temperature to a distribution for hourly precipitation. Then I created a linear regression model that related the hourly 2-meter temperature, the hourly 500hPa temperature, and the 500 hPa relative humidity to the distribution of hourly precipitation. The precipitation could then be estimated via sampling from the distribution. If there are concerns about the correlational support between temperature and precipitation, they are valid, because model performance was laughably bad. Quantile-Quanitle plots between training data and model output showed no clear trends, meaning that my models do serve well as forecasting tools. However, my models did perform better than the null hypothesis model, which argues that precipitation can be estimated without any known environmental conditions. 
 
 
 # Data Import 
+
+
+
+
 ```{julia}
 #| echo: false
 #| output: false
-# file list
-    t2m_obj = NCDataset("data/raw/2m_temperature_2019.nc") #kelvin
+#println(t2m_lon) # I choose -84.0
+#println(tp_lon) 
+#println(cpc_lon) # I choose -84.25
+```
+```{julia}
+#| echo: false
+#| output: false
+#println(t2m_lat) # I choose 33.0 
+#println(cpc_lat) # I choose 32.75
+```
+
+```{julia}
+#| echo: false
+#| output: false
+# Find indecies
+
+function data_getNwrangle(year,)
+#Predictors
+    t2m_obj = NCDataset("data/raw/2m_temperature_$year.nc") #kelvin
     t2m_time = Dates.Date.(t2m_obj["time"][:])
     t2m_lon =  t2m_obj["longitude"][:]
     t2m_lat = t2m_obj["latitude"][:]
     t2m_vals = t2m_obj["t2m"][:,:,:].*u"K"
     close(t2m_obj)
 
-    tp_obj = NCDataset("data/raw/Total_precipitation_2019.nc") #meters -> mm
+    t500hPa_obj = NCDataset("data/raw/500temperature$year.nc") #kelvin
+    t500hPa_time = Dates.Date.(t500hPa_obj["time"][:])
+    t500hPa_lon =  t500hPa_obj["longitude"][:]
+    t500hPa_lat = t500hPa_obj["latitude"][:]
+    t500hPa_vals = t500hPa_obj["t"][:,:,:].*u"K"
+    close(t500hPa_obj)
+
+    rh500hPa_obj = NCDataset("data/raw/500Relative_humidity$year.nc") #kelvin
+    rh500hPa_time = Dates.Date.(rh500hPa_obj["time"][:])
+    rh500hPa_lon =  rh500hPa_obj["longitude"][:]
+    rh500hPa_lat = rh500hPa_obj["latitude"][:]
+    rh500hPa_vals = rh500hPa_obj["r"][:,:,:]
+    close(rh500hPa_obj)
+
+#Predictands
+    tp_obj = NCDataset("data/raw/Total_precipitation_$year.nc") #meters -> mm
     tp_time = Dates.Date.(tp_obj["time"][:])
     tp_lon =  tp_obj["longitude"][:]
     tp_lat = tp_obj["latitude"][:]
@@ -83,94 +102,94 @@ If I sampled from a distribution for $y_i(x_i |\theta)$ twentyfour times, the su
     cpc_lat = cpc_obj["lat"][:]
     cpc_vals = cpc_obj["precip"][:,:,:].*u"mm"
     close(cpc_obj)
-```
-If you can see the following heatmaps, that means the data was succesfully imported. Since I am only downscaling temporally, I do not need the entire grid. I have choosen to use the time series at -84 degrees east and 33 degrees north.
 
-```{julia}
-a = heatmap(t2m_vals[:,:,:1])
-b = heatmap(tp_vals[:,:,1])
-c = heatmap(cpc_vals[:,:,1])
-plot(a,b,c)
-```
-
-```{julia}
-#| echo: false
-#| output: false
-println(t2m_lon) # I choose -84.0
-println(tp_lon) 
-println(cpc_lon) # I choose -84.25
-```
-```{julia}
-#| echo: false
-#| output: false
-println(t2m_lat) # I choose 33.0 
-println(cpc_lat) # I choose 32.75
-```
-
-```{julia}
-#| echo: false
-#| output: false
-# Find indecies
 era_lon = argmin(abs.(t2m_lon .+ 84.0))
 era_lat = argmin(abs.(t2m_lat .- 33.0))
 cpc_lon = argmin(abs.(cpc_lon .+ 84.25))
 cpc_lat = argmin(abs.(cpc_lat .- 32.75))
 
 # Temporarily Setting Time Domain
-year_start = Dates.Date(2019,1,1)
-year_end = Dates.Date(2019,12,31)
+year_start = Dates.Date(year,1,1)
+year_end = Dates.Date(year,12,31)
 
 # Extracting Time Series from Location
+## Predictors
 t2m_loc = t2m_vals[era_lon,era_lat,:]
+t500hPa_loc = t500hPa_vals[era_lon,era_lat,:]
+rh500hPa_loc = rh500hPa_vals[era_lon,era_lat,:]
+## Predictands
 tp_loc = tp_vals[era_lon,era_lat,:]
 cpc_loc = cpc_vals[cpc_lon,cpc_lat, (cpc_time .<= year_end) .* (cpc_time .>= year_start)];
 cpc_time = cpc_time[(cpc_time .<= year_end) .* (cpc_time .>= year_start)]
-println("t2m_loc size: ",size(t2m_loc))
-println("tp_loc size: ",size(tp_loc))
-println("cpc_loc size: ",size(cpc_loc))
-```
-# Data Wrangling and Exploration 
-```{julia}
-#| echo: false
-#| output: false
 
 # Creating DataFrames for my data
-df_era_hr = DataFrame(time = t2m_time, temp = t2m_loc, precip = tp_loc)
+df_era_hr = DataFrame(time = t2m_time, temp2m = t2m_loc, precip = tp_loc, relhum = rh500hPa_loc, temp500hpa = t500hPa_loc)
+
+## making sure no precipitation values are less than 0
 filter = vec(df_era_hr[!,:precip].< (0.0u"mm"))
 df_era_hr[filter,:precip] .= 0.0*u"mm"
+
+## Generate Daily Total Precipitation
 df_era_d = combine(groupby(df_era_hr,:time),:precip => sum)
 df_cpc_d = DataFrame(time = cpc_time, precip = cpc_loc)
 df_d = innerjoin(df_era_d, df_cpc_d, on = :time, renamecols = "_era" => "_cpc")
+
+return (df_era_hr,df_d)
+end
 ```
+
+```{julia}
+#| echo: false
+#| output: false
+(df_era_hr,df_d) = data_getNwrangle(2019)
+(test_df_era_hr,test_df_d) = data_getNwrangle(2020)
+```
+# Data Exploration 
 ## Distribution of Hourly Temperature and Precipitation (all ERA5)
 
 ```{julia}
 #| echo: false
-#| label: fig-ERA5-all
+#| label: fig-era-some
 #| fig-cap: "Distributions of hourly temperature and precipitation from the ERA5 dataset. a) The distribution of hourly precipitation. The distribution is dominated by zeros. b) The distribution of hourly temperature 2 meters above ground. The data appears slightly left skewed. c) Hourly precipitation against hourly temperature. There is a very weak negative correlation (corr = -0.017) "
 # Plot Distribution of Hourly Temperature and RainFall (all ERA5)
 a = histogram(df_era_hr[!,:precip],normalize = :pdf, title ="a)")
-b = histogram(df_era_hr[!,:temp], normalize = :pdf,title = "b)")
-c = scatter(df_era_hr[!,:temp],df_era_hr[!,:precip], title = "c)") # slight positive trend 
-#display(cor(df_era_hr.temp./u"K",df_era_hr.precip./u"mm"))
+b = histogram(df_era_hr[!,:temp2m], normalize = :pdf,title = "b)")
+c = scatter(df_era_hr[!,:temp2m],df_era_hr[!,:precip], title = "c)") # slight positive trend 
+#display(cor(df_era_hr.temp2m./u"K",df_era_hr.precip./u"mm"))
 plot(a,b,c)
 ```
 
 ```{julia}
 #| echo: false
+#| label: fig-nonzeros 
 #| fig-cap: "Distributions of hourly temperature and precipitation from the ERA5 with only nonzero precipitation obervations. a) The distribution of hourly precipitation. b) The distribution of hourly temperature 2 meters above ground. c) Hourly precipitation against hourly temperature. There is a  weak negative correlation (corr = -0.10) "
+
 # Plot Distribution of Hourly Temperature and RainFall (all ERA5)
 # Plot Distribution of Hourly Temperature and RainFall (all ERA5)
-filter = df_era_hr[!,:precip] .> 0.0u"mm" 
-a = histogram(df_era_hr[filter,:precip],normalize = :pdf)
-b = histogram(df_era_hr[filter,:temp],normalize = :pdf)
-c = scatter(df_era_hr[filter,:temp],df_era_hr[filter,:precip]) # no change in shapes when low values are cut. I don't think theres a strong correlation. 
-#display(cor(df_era_hr.temp[filter]./u"K",df_era_hr.precip[filter]./u"mm"))
+filterzz = df_era_hr[!,:precip] .> 0.0u"mm" 
+a = histogram(df_era_hr[filterzz,:precip],normalize = :pdf)
+b = histogram(df_era_hr[filterzz,:temp2m],normalize = :pdf)
+c = scatter(df_era_hr[filterzz,:temp2m],df_era_hr[filterzz,:precip]) # no change in shapes when low values are cut. I don't think theres a strong correlation. 
+#display(cor(df_era_hr.temp2m[filter]./u"K",df_era_hr.precip[filter]./u"mm"))
 plot(a,b,c)
 ```
+```{julia}
+#| echo: false
+#| label: fig-ERA5-all
+#| fig-cap: "Distributions of hourly 500 hPa relative humidity and temperature from the ERA5 dataset. a) Distribution of relative humidity. b) Distribution of 500 hPa temperature. c) Precipitation vs. 500 hPa relative humidity (cor = 0.26). d) Precipitation vs. 500 hPa relative humidity (cor = 0.029)."
+# Plot Distribution of Hourly Temperature and RainFall (all ERA5)
+a = histogram(df_era_hr[!,:relhum],normalize = :pdf, title ="a)",xlabel = "%")
+b = histogram(df_era_hr[!,:temp500hpa], normalize = :pdf,title = "b)")
+c = scatter(df_era_hr[!,:relhum],df_era_hr[!,:precip], title = "c)", xlabel = "%") 
+d = scatter(df_era_hr[!,:temp500hpa],df_era_hr[!,:precip], title = "d)")
+cor_precip_v_relhum = cor(df_era_hr.relhum,df_era_hr.precip./u"mm")
+cor_precip_v_temp500 = cor(df_era_hr.temp500hpa./u"K",df_era_hr.precip./u"mm")
+plot(a,b,c,d)
 
+```
 ```{julia}
 #| echo: false 
+#| label: fig-ERA5-v-CPC
 #| fig-cap: "Distribution of daily total precipitation from the ERA5 model and CPC obvervations. The correlation of data shown in c) is (cor = 0.025)."
 # Plot Distribution of Daily Precipitation from ERA5 and CPC obvervations
 a = histogram(df_d[!,:precip_sum_era],title = "a) ERA5")
@@ -194,7 +213,7 @@ The distribution of rainfall is not gaussian in any way. We've discussed in clas
 
 ```{julia}
 #| echo: false
-#| label: lognormal
+#| label: fig-lognormal
 #| fig-cap: By eye, A log-normal fit describes hourly precipitation fairly well. The parameters for the log-normal distribution are μ=-3.04 and σ=2.39. 
 fitted = fit(LogNormal,(df_era_hr[df_era_hr.precip .> 0.0u"mm",:precip]./u"mm")) 
 
@@ -207,14 +226,8 @@ I also checked the distribution of precipitation given certain ranges of tempera
 
 ```{julia}
 #| echo: false
-#| label: lognormal-cuts
-#| fig-cap: 
-#| #| fig-subcap: The log-normal distribution also does well with different cuts of precipitation, by temperature. 
-#|   - "Histograms and fitted distributions."
-#|   - "Parameters for each fit."
-
-####
-filter = (df_era_hr.precip .> 0.0u"mm") .* (df_era_hr.temp .< 283.0u"K")
+function plot_sliced_precip(temp_start,temp_end,label)
+filter = (df_era_hr.precip .> 0.0u"mm") .* (df_era_hr.temp2m .< temp_end) .*(df_era_hr.temp2m .> temp_start)
 
 fitted_A = fit(LogNormal,(df_era_hr[filter,:precip]./u"mm")) 
 
@@ -222,65 +235,72 @@ a = histogram(  df_era_hr[filter,:precip]./u"mm",
                 normalize = true,
                 xlims=(0,3), 
                 ylabel = "p",
-                title = "i) T < 283.0 K")
+                title = label*"$temp_start < T < $temp_end")
 
 plot!(fitted_A,xlims=(0,3),linewidth = 3)
+return a, fitted_A
+end
+```
+
+```{julia}
+#| echo: false
+#| label: fig-lognormal-cuts
+#| fig-cap: 
+#| #| fig-subcap: The log-normal distribution also does well with different cuts of precipitation, by temperature. 
+#|   - "Histograms and fitted distributions."
+#|   - "Parameters for each fit."
 
 ####
-filter = (df_era_hr.precip .> 0.0u"mm") .* (df_era_hr.temp .< 293.0u"K") .*(df_era_hr.temp .> 283.0u"K")
+(a, fit_a) = plot_sliced_precip(0u"K",283u"K","i)  ")
+(b, fit_b) = plot_sliced_precip(283u"K",293u"K","ii)  ")
+(c, fit_c) = plot_sliced_precip(293u"K",303u"K","iii)  ")
+(d, fit_d) = plot_sliced_precip(303u"K",313u"K","iv)  ")
 
-fitted_B = fit(LogNormal,(df_era_hr[filter,:precip]./u"mm")) 
-
-b = histogram(  df_era_hr[filter,:precip]./u"mm",
-                normalize = true,
-                xlims=(0,3),
-                title = "ii) 283 < T < 293 K")
-
-plot!(fitted_B,xlims=(0,3),linewidth = 3)
-
-####
-filter = (df_era_hr.precip .> 0.0u"mm") .* (df_era_hr.temp .< 303.0u"K").*(df_era_hr.temp .> 293.0u"K")
-
-fitted_C = fit(LogNormal,(df_era_hr[filter,:precip]./u"mm")) 
-
-c = histogram(  df_era_hr[filter,:precip]./u"mm",
-                normalize = true,
-                xlims=(0,3),
-                xlabel = "Hourly Precipitation (mm) " ,
-                ylabel = "p", 
-                title = "iii) 293 K < T < 303 K")
-    
-plot!(fitted_C,xlims=(0,3),linewidth = 3)
-
-####
-filter = (df_era_hr.precip .> 0.0u"mm") .* (df_era_hr.temp .< 313.0u"K").*(df_era_hr.temp .> 303.0u"K")
-
-fitted_D = fit(LogNormal,(df_era_hr[filter,:precip]./u"mm")) 
-
-d= histogram(   df_era_hr[filter,:precip]./u"mm",
-                normalize = true,
-                xlims=(0,3),
-                xlabel = "Hourly Precipitation (mm)",
-                title = "iv) 303 K < T < 313 K")
-
-plot!(fitted_D,xlims=(0,3),linewidth = 3)
-
-println("i)   ",fitted_A,'\n',
-        "ii)  ",fitted_B,'\n',
-        "iii) ", fitted_C,'\n',
-        "iv)  ", fitted_D)
+println("i)   ",fit_a,'\n',
+        "ii)  ",fit_b,'\n',
+        "iii) ", fit_c,'\n',
+        "iv)  ", fit_d)
 
 
 ###########
 plot(a,b,c,d)
 ```
 
-# Methods 
-1. Create a GLM using temperature to predict precipitation 
-2. Write a function that predicts precipitation given GLM parameters, temperature, precipitation already predicted for the day, and the observed daily precipitation.
 
-## Create a GLM using temperature to predict precipitation  
+# Methods 
+I created three models for this project. The first was a null model that assumed an uniform distribution of hourly precipitation, such that for each hour of rainfall, any intensity would have the same probability density. The second and third model both assume that probability density of a given precipitation intensity is described by a Log-Normal distribution with parameters $\mu$ and $\sigma$. For the second model, the distribution was fit based on @eq-a and @eq-b, which were based on GLM methods. For the third model, the distribution was fit based on @eq-c and @eq-d, which were based on linear regression methods. I acknowledge that it may be a strain to claim that model II is a GLM. The coefficients were determined using MCMC with chain lengths of 100 iterations. The chain length was small to maintain reasonable computing times. Parameter estimation was done on 2019 data and results were tested over 2020 data. Since the model is stochastic in nature, I ran the models 100 times over the testing data and collected the summary statistics of the model results. 
+
+## Parameter estimation for model II 
+In model II, both $\mu$ and $\sigma$ were assumed to correlate with 2-meter temperature. The mean is estimated with
+
+$$
+\mu_i = \alpha+\beta T_{2,i},
+$${#eq-a}
+
+where priors for $\alpha$ and $\beta$ were both standard normal distributions, and $T_i$ is observed 2-meter temperature. The standard deviation is estimated with a homologous equation, that is,
+
+$$
+\sigma_i = | \gamma+\chi T_{2,i} |,
+$${#eq-b}
+
+where priors for $\gamma$ and $\chi$ were both standard normal distributions. I have chosen to use the identity link function for equation @eq-a and a non-cononical absolute value for @eq-b. The idenity link function was chosen because $\mu \in (-\infty,\infty)$ and, the absolute value function was chosen because $\sigma \in (0,\infty)$. 
+
+## Parameter estimation for model III 
+In model III, I assumed that the $\mu$ correlated with temperature and humidity at geopotential of 500 hPa ($T_{500,i}$, $H_{i}$ respectively), as well as 2-meter temperature. That is,
+
+$$
+\mu_i = \alpha + \beta_1 T_{500,i} + \beta_2 H_{i} + \beta_3 T_{2,i},
+$$
+where all coefficient priors, as well as $\sigma$, were standard normal distributions. 
+
+## Using Observed Daily Total Precipitation as a Boundary Condition 
+
+If I sampled from a distribution for $y_i(x_i |\theta)$ twentyfour times, the sum would not be guarranteed to stay within the observed daily precipitation for that time period. To prevent overestimating daily precipitation, I reject any sample of the distribution of $y_i(x_i|\theta)$ that put the total daily precipitation above the corresponding observation. 
+
+
 ```{julia}
+#| echo: false
+#| output: false
 function link_function1(value)
     return value
 end
@@ -301,60 +321,63 @@ end
         end
 end
 
-@model function regression_lr(y::AbstractVector, T::AbstractVector,H::AbstractVector,P::AbstractVector, dT::AbstractVector)
+@model function regression_lr(y::AbstractVector, T2::AbstractVector,H::AbstractVector,T500::AbstractVector)
         α ~ Normal(0, 1)
         β1 ~ Normal(0, 1)
         β2 ~ Normal(0, 1)
         β3 ~ Normal(0, 1)
-        β4 ~ Normal(0, 1)
-        σ ~ Normal(0,1)
+        σ ~ truncated(Normal(0,1),0, Inf)
         for i in eachindex(y)
-            μ = α + β1 * T[i]+ β2 * H[i]+ β3 * P[i]+ β4 * dT[i]
+            μ = α + β1 * T2[i]+ β2 * H[i]+ β3 * T500[i]
             y[i] ~ LogNormal(μ,σ)
         end
 end
 ```
 
 ```{julia}
-X = df_era_hr.temp[df_era_hr.precip .> 0.0u"mm"]./u"K"
+#| echo: false
+#| output: false
+T2 = df_era_hr.temp2m[df_era_hr.precip .> 0.0u"mm"]./u"K"
+T500 = df_era_hr.temp500hpa[df_era_hr.precip .> 0.0u"mm"]./u"K"
+H = df_era_hr.relhum[df_era_hr.precip .> 0.0u"mm"]
 y = df_era_hr.precip[df_era_hr.precip .> 0.0u"mm"]./u"mm"
 ```
 
 ```{julia}
+#| echo: false
+#| output: false
 glm_chn = let
-    model = regression_glm( y , X )
+    model = regression_glm( y , T2)
     sampler = externalsampler(DynamicHMC.NUTS())
     nsamples = 100
     sample(model, sampler, nsamples; drop_warmup=true)
 end
-a = plot(glm_chn)
+glm_MCMC_results = plot(glm_chn)
 ```
 
 ```{julia}
+#| echo: false
+#| output: false
 lr_chn = let
-    model = regression_lr( y , X )
+    model = regression_lr( y , T2, H, T500 )
     sampler = externalsampler(DynamicHMC.NUTS())
     nsamples = 100
     sample(model, sampler, nsamples; drop_warmup=true)
 end
-b = plot(lr_chn)
+lr_MCMC_results = plot(lr_chn)
 ```
-
 ```{julia}
-function predict_precip_one_glm(chn,T_i, R_n, RD)
+#| echo: false
+#| output: false
+function predict_precip_one_NULL(chn,T_i,R_n, RD,  H_i = 0, T500_i = 0)
+    if RD <= 0
+        return 0, 0 
+    else
+        #println(RD)
+        dist = Uniform(0,RD)
+    end
+    max_precip = RD
     elapsed_precip = sum(R_n) 
-    max_precip = RD 
-
-    α = mean(chn[:α])
-    β = mean(chn[:β])
-    γ = mean(chn[:γ])
-    χ = mean(chn[:χ])
-
-    μ = link_function1(α+β*T_i)
-    #print(size(μ))
-    σ = link_function2(γ+χ*T_i)
-    #print(size(σ))
-    dist = LogNormal(μ,σ)
     R_i = [Inf64]
     LL_i = 0.0
     #print(typeof(R_i))
@@ -395,18 +418,78 @@ function predict_precip_one_glm(chn,T_i, R_n, RD)
     return R_i[1],LL_i
 end
 ```
-
-Output of this section should be parameters to obtain the distribution of hourly rainfall given an hourly 2meter-temperature. 
-
 ```{julia}
-function predict_precip_one_lr(chn,T_i, R_n, RD)
+#| echo: false
+#| output: false
+function predict_precip_one_glm(chn,T2_i, R_n, RD,  H_i = 0, T500_i = 0)
     elapsed_precip = sum(R_n) 
     max_precip = RD 
 
     α = mean(chn[:α])
     β = mean(chn[:β])
+    γ = mean(chn[:γ])
+    χ = mean(chn[:χ])
+
+    μ = link_function1(α+β*T2_i)
+    #print(size(μ))
+    σ = link_function2(γ+χ*T2_i)
+    #print(size(σ))
+    dist = LogNormal(μ,σ)
+    R_i = [Inf64]
+    LL_i = 0.0
+    #print(typeof(R_i))
+    #print(typeof(max_precip))
+    #print(typeof(elapsed_precip))
+    counter = 0
+    #println("maxL", max_precip)
+    if max_precip == 0.0
+        R_i[1] = 0.0
+        #println("nob")
+    else
+        #println("coooob")
+        while ((R_i[1] > (max_precip-elapsed_precip))  | (R_i == Inf))
+            counter = counter + 1 
+            if (max_precip - elapsed_precip) < 0.0 
+                R_i[1] = 0.0 
+                LL_i = 0.0
+                break
+            end
+            R_i[1] = rand(dist,1)[1]
+            LL_i = logpdf(dist,R_i[1])
+
+            if (R_i[1]+elapsed_precip) > max_precip
+                R_i[1] = Inf 
+                LL_i = -Inf
+            end
+
+            if counter > 1000
+                R_i[1]= 0.0
+                LL_i = 0.0 
+                break
+            end
+            
+        end
+
+    end
+
+    return R_i[1],LL_i
+end
+```
+
+
+```{julia}
+#| echo: false
+#| output: false
+function predict_precip_one_lr(chn, T2_i, R_n, RD, H_i, T500_i)
+    elapsed_precip = sum(R_n) 
+    max_precip = RD 
+
+    α = mean(chn[:α])
+    β1 = mean(chn[:β1])
+    β2 = mean(chn[:β2])
+    β3 = mean(chn[:β3])
     σ = mean(chn[:σ])
-    μ = α+β*T_i
+    μ = α + β1 * T2_i+ β2 * H_i+ β3 * T500_i
     #print(size(μ))
     
     #print(size(σ))
@@ -454,6 +537,8 @@ end
 
 ## Testing 
 ```{julia}
+#| echo: false
+#| output: false
 function run_model(df_era_hr_passer,df_d,logistic_chn,predict_func)
 df_era_hr = df_era_hr_passer
 df_era_hr[!,:model] = df_era_hr.precip.*0.0
@@ -469,9 +554,11 @@ for (a_idx,a) in enumerate(eachrow(df_d[:,:]))
             R_n = [0.0]
         end
         R_i,LL_i = predict_func(logistic_chn,
-                                b[:temp]./u"K",
+                                b[:temp2m]./u"K",
                                 R_n,
-                                a[:precip_sum_era]./u"mm")
+                                a[:precip_sum_era]./u"mm",
+                                b[:relhum],
+                                b[:temp500hpa]./u"K")
 
         #println("R_i  ", R_i )
         #println("Idx ", idx)
@@ -486,17 +573,20 @@ end
 end
 ```
 ```{julia}
+#| echo: false
+#| output: false
 function analytics(df_era_hr)
     total_precip = sum(df_era_hr.precip[:])
     total_modeled_precip = sum(df_era_hr.model[:])
     model_likelihood = sum(df_era_hr.loglikelihood)
+    
     model_training_correlation = cor(df_era_hr.precip./u"mm",df_era_hr.model./u"mm")
 
-    mse = sum((df_era_hr.precip[:] .- df_era_hr.model[:]).^2)
+    mse = mean((df_era_hr.precip[:] .- df_era_hr.model[:]).^2)
 
     model_v_obs_line = plot(df_era_hr.precip[:])
     plot!(df_era_hr.model[:])
-    model_v_obs_scatter = scatter(df_era_hr.precip, df_era_hr.model)
+    model_v_obs_scatter = scatter(df_era_hr.precip, df_era_hr.model, xlabel = "Observation", ylabel = "Model",zcolor = df_era_hr.loglikelihood)
     
     return (DataFrame(  total_precip = total_precip ,
                         total_modeled_precip = total_modeled_precip,model_likelihood = model_likelihood,
@@ -506,35 +596,93 @@ end
 ```
 
 ```{julia}
-lr_result = run_model(df_era_hr,df_d,lr_chn,predict_precip_one_lr)
-lr_stats, lr_line, lr_scatter = analytics(lr_result)
+#| echo: false
+#| output: false
+NULL_chn = [0.0 for i in 1:100]
+NULL_result = run_model(test_df_era_hr,test_df_d,NULL_chn,predict_precip_one_NULL)
+NULL_stats, NULL_line, NULL_scatter = analytics(NULL_result)
 
 for i in 1:100
+    temp_NULL_result = run_model(df_era_hr,df_d,NULL_chn,predict_precip_one_NULL)
+    temp_NULL_stats, temp_NULL_line, temp_NULL_scatter = analytics(temp_NULL_result)
+    append!(NULL_stats,temp_NULL_stats)
+end
+```
+
+```{julia}
+#| echo: false
+#| output: false
+lr_result = run_model(test_df_era_hr,test_df_d,lr_chn,predict_precip_one_lr)
+lr_stats, lr_line, lr_scatter = analytics(lr_result)
+for i in 1:100
     temp_lr_result = run_model(df_era_hr,df_d,lr_chn,predict_precip_one_lr)
-    temp_lr_stats, temp_lr_line, temp_lr_scatter = analytics(lr_result)
+    temp_lr_stats, temp_lr_line, temp_lr_scatter = analytics(temp_lr_result)
     append!(lr_stats,temp_lr_stats)
 end
 ```
 
 ```{julia}
-glm_result = run_model(df_era_hr,df_d,glm_chn,predict_precip_one_glm)
+#| echo: false
+#| output: false
+glm_result = run_model(test_df_era_hr,test_df_d,glm_chn,predict_precip_one_glm)
 glm_stats, glm_line, glm_scatter = analytics(glm_result)
 
 for i in 1:100
     temp_glm_result = run_model(df_era_hr,df_d,glm_chn,predict_precip_one_glm)
-    temp_glm_stats, temp_glm_line, temp_glm_scatter = analytics(glm_result)
+    temp_glm_stats, temp_glm_line, temp_glm_scatter = analytics(temp_glm_result)
     append!(glm_stats,temp_glm_stats)
 end
 ```
 
+# Results 
+## MCMC Paramaterization Results
+Though sample sizes were small, the parameters appear to be converging and rhat values are around 1.0. I am moderatly confident that the MCMC parameterization behaves well. 
 ```{julia}
-reconstruct_daily_precip = combine(groupby(df_era_hr,:time), :precip  => sum, :model => sum, :loglikelihood => sum)
-
-a = plot(reconstruct_daily_precip.precip_sum)
-plot!(reconstruct_daily_precip.model_sum)
-b = scatter(reconstruct_daily_precip.precip_sum,reconstruct_daily_precip.model_sum)
-plot(a,b)
+#| echo: false
+#| label: fig-glm_MCMC_results
+#| fig-cap: Montecarlo Markov-chain results for fitting parameters for model II. 
+display(plot(glm_MCMC_results))
+display(summarystats(glm_chn))
 ```
-# Model Comparison
+
+```{julia}
+#| echo: false
+#| fig-cap: Montecarlo Markov-chain results for fitting parameters for model III. 
+display(plot(lr_MCMC_results))
+display(summarystats(lr_chn))
+```
+## Model Comparison 
+
+All three models that I made were terrible at reconstructing real observations. The scatter plots show that predictions and observations are quite inconsistent with each other (@fig-null-results,@fig-glm-results,@fig-lr-results). Furthermore, the high log-likelihood of low precipitation prediction can be directly attributed to the distribution function used. Ideally, high-likelihood values have further spread into higher precipitation predictions. Perhaps this can be done with bayesian techniques that integrate daily total precipitation into the PDF directly, instead of the sampling trick that I used. 
+
+Despite the overwhelming sense of poor performance from the qualitative side, Models II and III do have lower mean squarred errors when compared to the null model (@fig-null-results,@fig-glm-results,@fig-lr-results). This suggests that, even though predictions are pretty much pure guess work, using prior knowledge about the climatology does produce better guess. However, there does not seem to be much difference due to the implementation of the model and the information provided to the models.  
+
+I have also collected other summary statistics that provide insight onto model performance such as the total modeled precipitation and the model-observation correlation. The total modeled precipiation is best reconstructed by Model I, which is not surprising since the sampling distribution favors no precipitation intensity. The total modeled precipitation is significantly less the the actual annual total precipitation for models II and III. This is also expected as the log-normal distributions each point is sampled from favors low intensity precipitation values much more than high intensity precipitation.  
+```{julia}
+#| echo: false
+#| label: fig-null-results
+#| fig-cap: Summary results for the null hypothesis (Model I). a) Q-Q plot. b) Ensemble statistics. Color bar shows the log-likelihood for each predicted point. 
+display(plot(NULL_scatter))
+describe(NULL_stats)
+```
+
+
+```{julia}
+#| echo: false
+#| label: fig-glm-results
+#| fig-cap: "Summary results for the GLM method (Model II). a) Q-Q plot. b) Ensemble statistics. Color bar shows the log-likelihood for each predicted point. "
+display(plot(glm_scatter))
+describe(glm_stats)
+```
+
+```{julia}
+#| echo: false
+#| label: fig-lr-results
+#| fig-cap: "Summary results for the linear regression method (Model III). a) Q-Q plot. b) Ensemble statistics. Color bar shows the log-likelihood for each predicted point." 
+display(plot(lr_scatter))
+describe(lr_stats)
+```
 
 # Conclusion
+
+In this project I have explored the use of distributional downscaling for precipitation time series. I have also naively implemented an algorithm to digest available observations in an attempt to ground my distributional model. This method has several limitations, some are characteristic of the method, while others are specific to my implementations. In general, distributional downscaling is not suitable for making climate forcasts. Instead, it is good for providing a statistical assessment for a given set of predictors. Unique to my model, is the tendency to underpredict precipitation, which seems similar to dreary bias that we've learned in class. In order to improve upon my work, I would need to find a better method for assimilating existing observations during the downscaling process, perhaps with bayesian methods that update probability of certain rainfall using observations and continuity rules. 
