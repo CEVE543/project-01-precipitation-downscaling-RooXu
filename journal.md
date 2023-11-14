@@ -1,3 +1,5 @@
+# 11/13/2023 
+Installed libsvg using brew in an attempt to fix svg errors. 
 # 11/10/2023 
 The issue with downscaling a timeseries for precipiation is that there are no existing data to train on. The precipitation for one day measures the total precipitation in one day. I cannot assume that the precipitation for an hour is just total precipitation/24. This is pretty tricky to do especially without any physical models. The parameters for this problem are: 
 Input: Daily total precipitation, hourly temperature measurement 

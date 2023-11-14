@@ -280,6 +280,22 @@ function run_demo()
         download_single_level_data.(
             year, joinpath(data_dir, "Total_precipitation_$year.nc"), "Total_precipitation"
         )
+
+        # Download 500 hPa geopotential for the year 2020
+        level = 500
+        download_pressure_level_data.(
+            year,
+            joinpath(data_dir, "$(level)Temperature$year.nc"),
+            "Temperature",
+            level,
+        )
+
+        download_pressure_level_data.(
+            year,
+            joinpath(data_dir, "$(level)Relative_humidity$year.nc"),
+            "Relative_humidity",
+            level,
+        )
     end
 
     # read in all the 2m temperature data
@@ -290,7 +306,7 @@ function run_demo()
     tp = open_mfdataset(fnames, "tp") # we sort based on time, so we don't need to sort here
 
     display(t2m)
-    display(z500)
+    display(tp)
 
     return nothing
 end
