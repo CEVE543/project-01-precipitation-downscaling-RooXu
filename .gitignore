@@ -5,5 +5,13 @@ data/
 !data/raw/README.md
 !data/processed/README.md
 
-.cdsapirc
+*.cdsapirc
+*.docx
+*.aux
+*.log
+*.pdf
+*.tex
+*.toc
+*.ipynb
 template_files/
+template\ copy\ 3_files/
